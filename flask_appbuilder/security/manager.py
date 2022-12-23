@@ -9,6 +9,8 @@ from flask import g, session, url_for
 from flask_babel import lazy_gettext as _
 from flask_jwt_extended import current_user as current_user_jwt
 from flask_jwt_extended import JWTManager
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from flask_login import current_user, LoginManager
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -255,6 +257,10 @@ class BaseSecurityManager(AbstractSecurityManager):
             app.config.setdefault("AUTH_LDAP_LASTNAME_FIELD", "sn")
             app.config.setdefault("AUTH_LDAP_EMAIL_FIELD", "mail")
 
+        # Rate limiting
+        app.config.setdefault("AUTH_RATE_LIMITED", False)
+        app.config.setdefault("AUTH_RATE_LIMIT", "2 per 5 seconds")
+
         if self.auth_type == AUTH_OID:
             from flask_openid import OpenID
 
@@ -284,6 +290,14 @@ class BaseSecurityManager(AbstractSecurityManager):
 
         # Setup Flask-Jwt-Extended
         self.jwt_manager = self.create_jwt_manager(app)
+
+        # Setup Flask-Limiter
+        self.limiter = self.create_limiter(app)
+
+    def create_limiter(self, app) -> Limiter:
+        limiter = Limiter(key_func=get_remote_address)
+        limiter.init_app(app)
+        return limiter
 
     def create_login_manager(self, app) -> LoginManager:
         """
@@ -488,6 +502,14 @@ class BaseSecurityManager(AbstractSecurityManager):
     @property
     def oauth_providers(self):
         return self.appbuilder.get_app.config["OAUTH_PROVIDERS"]
+
+    @property
+    def is_auth_rate_limited(self):
+        return self.appbuilder.get_app.config["AUTH_RATE_LIMITED"]
+
+    @property
+    def auth_rate_limit(self):
+        return self.appbuilder.get_app.config["AUTH_RATE_LIMIT"]
 
     @property
     def current_user(self):
@@ -734,6 +756,11 @@ class BaseSecurityManager(AbstractSecurityManager):
                 # self.appbuilder.add_view_no_menu(self.registeruser_view)
 
         self.appbuilder.add_view_no_menu(self.auth_view)
+        if self.is_auth_rate_limited:
+            self.limiter.limit(
+                self.auth_rate_limit,
+                per_method=True,
+            )(self.auth_view.blueprint)
 
         self.user_view = self.appbuilder.add_view(
             self.user_view,
